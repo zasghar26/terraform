@@ -40,7 +40,9 @@ def generate_code(data: RequestModel):
         result = response.json()
         message = result["choices"][0]["message"]["content"].strip()
 
-        return {"terraform_code": message}
+        cleaned_code = message.replace("```hcl", "").replace("```", "").strip()
+        return {"terraform_code": cleaned_code}
+
 
     except Exception as e:
         print("🔥 Error:", e)

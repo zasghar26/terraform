@@ -1,0 +1,17 @@
+Input: Create 2 Ubuntu droplets in Frankfurt with 2 vCPUs
+Output:
+resource "digitalocean_droplet" "web" {
+  count  = 2
+  name   = "web-${count.index}"
+  image  = "ubuntu-22-04-x64"
+  region = "fra1"
+  size   = "s-2vcpu-2gb"
+}
+
+Input: Create a load balancer in nyc3 for 3 droplets
+Output:
+resource "digitalocean_loadbalancer" "lb" {
+  name   = "web-lb"
+  region = "nyc3"
+  droplet_ids = digitalocean_droplet.web[*].id
+}

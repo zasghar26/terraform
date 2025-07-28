@@ -7,7 +7,7 @@ import os
 
 load_dotenv()
 
-AGENT_URL = os.getenv("DO_AGENT_URL")  # Public Agent URL
+AGENT_URL = os.getenv("DO_AGENT_URL")  # Now includes /api/v1/chat/completions
 
 if not AGENT_URL:
     raise Exception("DO_AGENT_URL is missing in .env")
@@ -20,7 +20,9 @@ class RequestModel(BaseModel):
 @app.post("/generate")
 def generate_code(data: RequestModel):
     try:
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json"
+        }
 
         payload = {
             "messages": [
@@ -31,7 +33,9 @@ def generate_code(data: RequestModel):
         response = requests.post(AGENT_URL, headers=headers, json=payload)
         response.raise_for_status()
 
-        message = response.json()["choices"][0]["message"]["content"].strip()
+        result = response.json()
+        message = result["choices"][0]["message"]["content"].strip()
+
         return {"terraform_code": message}
 
     except Exception as e:

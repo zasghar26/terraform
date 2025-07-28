@@ -2,43 +2,51 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import openai
+import requests
 import os
 
+# Load .env variables
 load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
 
-if not api_key:
-    raise Exception("OPENAI_API_KEY is missing.")
+DO_API_KEY = os.getenv("DO_API_KEY")
+DO_AGENT_ID = os.getenv("DO_AGENT_ID")
 
-client = openai.OpenAI(api_key=api_key)
+if not DO_API_KEY or not DO_AGENT_ID:
+    raise Exception("DO_API_KEY or DO_AGENT_ID is missing in .env")
+
+# FastAPI app
 app = FastAPI()
 
+# Input schema
 class RequestModel(BaseModel):
     text: str
 
-# Load prompt examples
-try:
-    with open("prompt_examples.txt", "r") as f:
-        FEW_SHOT_PROMPT = f.read()
-except FileNotFoundError:
-    raise Exception("prompt_examples.txt not found.")
-
+# API route to talk to the DO agent
 @app.post("/generate")
 def generate_code(data: RequestModel):
     try:
-        prompt = f"{FEW_SHOT_PROMPT}\nInput: {data.text}\nOutput:"
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a Terraform generator for DigitalOcean."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-        terraform_code = response.choices[0].message.content.strip()
-        return {"terraform_code": terraform_code}
+        url = f"https://api.digitalocean.com/v2/agents/{DO_AGENT_ID}/chat"
+        headers = {
+            "Authorization": f"Bearer {DO_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": data.text
+                }
+            ]
+        }
+
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+
+        result = response.json()
+        message = result["choices"][0]["message"]["content"].strip()
+        return {"terraform_code": message}
+
     except Exception as e:
         print("🔥 Error:", e)
         return JSONResponse(status_code=500, content={"error": str(e)})

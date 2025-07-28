@@ -7,7 +7,8 @@ import os
 
 load_dotenv()
 
-AGENT_URL = os.getenv("DO_AGENT_URL")  # Now includes /api/v1/chat/completions
+AGENT_URL = os.getenv("DO_AGENT_URL")
+AGENT_TOKEN = os.getenv("DO_AGENT_TOKEN")  # Optional token
 
 if not AGENT_URL:
     raise Exception("DO_AGENT_URL is missing in .env")
@@ -23,6 +24,9 @@ def generate_code(data: RequestModel):
         headers = {
             "Content-Type": "application/json"
         }
+
+        if AGENT_TOKEN:
+            headers["Authorization"] = f"Bearer {AGENT_TOKEN}"
 
         payload = {
             "messages": [

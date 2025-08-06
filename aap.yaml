@@ -1,0 +1,17 @@
+name: terraform-deployer
+services:
+  - name: deployer-worker
+    dockerfile_path: Dockerfile
+    run_command: python main.py
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /
+    envs:
+      - key: DO_TOKEN
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: AGENT_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET

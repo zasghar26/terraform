@@ -1,49 +1,64 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
-import requests
+from flask import Flask, request, jsonify
 import os
+import subprocess
+import uuid
+import shutil
 
-load_dotenv()
+app = Flask(__name__)
 
-AGENT_URL = os.getenv("DO_AGENT_URL")
-AGENT_TOKEN = os.getenv("DO_AGENT_TOKEN")  # Optional token
+AGENT_KEY = os.environ.get("AGENT_KEY")
+DO_TOKEN = os.environ.get("DO_TOKEN")
 
-if not AGENT_URL:
-    raise Exception("DO_AGENT_URL is missing in .env")
+@app.route('/deploy', methods=['POST'])
+def deploy():
+    # Authorization header check
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or auth_header != f"Bearer {AGENT_KEY}":
+        return jsonify({"error": "Unauthorized"}), 401
 
-app = FastAPI()
+    # Get and validate JSON
+    data = request.get_json()
+    tf_code = data.get("terraform_code")
 
-class RequestModel(BaseModel):
-    text: str
+    if not tf_code:
+        return jsonify({"error": "No Terraform code provided"}), 400
 
-@app.post("/generate")
-def generate_code(data: RequestModel):
+    # Create temporary isolated directory
+    deploy_id = str(uuid.uuid4())
+    os.makedirs(deploy_id)
+    os.chdir(deploy_id)
+
+    # Write main.tf
+    with open("main.tf", "w") as f:
+        f.write(tf_code)
+
+    # Write tfvars with DO token
+    with open("terraform.tfvars", "w") as f:
+        f.write(f'do_token = "{DO_TOKEN}"\n')
+
+    # Inject provider block if not present
+    if "provider" not in tf_code:
+        with open("provider.tf", "w") as f:
+            f.write("""
+variable "do_token" {}
+
+provider "digitalocean" {
+    token = var.do_token
+}
+""")
+
+    # Run Terraform
     try:
-        headers = {
-            "Content-Type": "application/json"
-        }
+        subprocess.run(["terraform", "init"], check=True)
+        subprocess.run(["terraform", "apply", "-var-file=terraform.tfvars", "-auto-approve"], check=True)
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": "Terraform failed", "details": str(e)}), 500
+    finally:
+        # Clean up after run
+        os.chdir("..")
+        shutil.rmtree(deploy_id, ignore_errors=True)
 
-        if AGENT_TOKEN:
-            headers["Authorization"] = f"Bearer {AGENT_TOKEN}"
+    return jsonify({"message": "Terraform applied successfully!"})
 
-        payload = {
-            "messages": [
-                {"role": "user", "content": data.text}
-            ]
-        }
-
-        response = requests.post(AGENT_URL, headers=headers, json=payload)
-        response.raise_for_status()
-
-        result = response.json()
-        message = result["choices"][0]["message"]["content"].strip()
-
-        cleaned_code = message.replace("```hcl", "").replace("```", "").strip()
-        return {"terraform_code": cleaned_code}
-
-
-    except Exception as e:
-        print("🔥 Error:", e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)

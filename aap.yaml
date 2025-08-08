@@ -2,7 +2,7 @@ name: terraform-deployer
 services:
   - name: deployer-worker
     dockerfile_path: Dockerfile
-    run_command: python main.py
+    run_command: gunicorn main:app --bind 0.0.0.0:8080
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs

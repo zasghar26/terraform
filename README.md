@@ -13,9 +13,7 @@ Temp workdirs under /tmp/<uuid>; auto-cleanup after each run.
 No hard-coded URLs; works same-origin by default.
 
 Architecture
-bash
-Copy
-Edit
+
 Frontend (static/deploy.js)
       |
       |  POST /trigger-deploy   (returns 202 + job_id + status_url)
@@ -29,9 +27,7 @@ Backend (Flask)
       |  GET /jobs/<job_id>     (poll until done/error)
 Frontend (polls and updates UI)
 Repo Layout
-php
-Copy
-Edit
+
 .
 ├─ main.py               # Flask app with async job runner
 ├─ static/
@@ -56,16 +52,12 @@ Same-origin is recommended. If frontend and backend are on different origins, en
 Quickstart (Local)
 Create and activate a venv:
 
-bash
-Copy
-Edit
+
 python3 -m venv .venv
 source .venv/bin/activate
 Install deps:
 
-bash
-Copy
-Edit
+
 pip install -r requirements.txt
 Install Terraform (locally).
 
@@ -75,16 +67,12 @@ Linux: follow HashiCorp’s instructions, or use the Dockerfile method below.
 
 Export env vars:
 
-bash
-Copy
-Edit
+
 export DO_TOKEN=your_do_api_token
 export PORT=5000
 Run:
 
-bash
-Copy
-Edit
+
 gunicorn -w 2 -b 0.0.0.0:$PORT main:app
 Open http://localhost:5000, paste Terraform code, click Deploy.
 
@@ -95,8 +83,7 @@ Recommended: Deploy with a Dockerfile so Terraform is present at runtime.
 
 Dockerfile (example)
 dockerfile
-Copy
-Edit
+
 # ---- Build runtime with Python + Terraform ----
 FROM python:3.11-slim
 
@@ -145,9 +132,7 @@ POST /trigger-deploy
 Form data: tf_code=<terraform text>
 Returns 202:
 
-json
-Copy
-Edit
+
 {
   "status": "accepted",
   "job_id": "b2e6…",
@@ -156,16 +141,12 @@ Edit
 GET /jobs/<job_id>
 Returns:
 
-json
-Copy
-Edit
+
 {"status": "pending|running|done|error", "message": "...", "details": "...?"}
 Sample Terraform (DigitalOcean Droplet)
 Costs money. Use at your own risk; destroy afterward.
 
-hcl
-Copy
-Edit
+
 terraform {
   required_providers {
     digitalocean = {
@@ -189,9 +170,7 @@ resource "digitalocean_droplet" "example" {
 }
 The app will create terraform.tfvars with:
 
-ini
-Copy
-Edit
+
 do_token = "<value from DO_TOKEN>"
 Troubleshooting
 HTTP 504 / timeouts

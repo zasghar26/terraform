@@ -52,31 +52,29 @@ def run_terraform_apply(tf_code: str) -> dict:
         cwd_before = os.getcwd()
         os.chdir(deploy_dir)
 
-        # Write TF files
+        # 1) Write user's Terraform as-is
         with open("main.tf", "w") as f:
             f.write(tf_code)
 
-        with open("terraform.tfvars", "w") as f:
-            f.write(f'do_token = "{DO_TOKEN}"\n')
-
-        # Inject provider if missing (basic check)
+        # 2) If no provider block, add a minimal one that uses env var
         if "provider" not in tf_code:
             with open("provider.tf", "w") as f:
-                f.write(
-                    'variable "do_token" {}\n\n'
-                    'provider "digitalocean" {\n'
-                    '  token = var.do_token\n'
-                    '}\n'
-                )
+                f.write('provider "digitalocean" {}\n')
 
-        # Terraform init/apply
-        subprocess.run(["terraform", "init", "-no-color"], check=True)
+        # 3) Ensure Terraform reads the token from env
+        env = os.environ.copy()
+        env["DIGITALOCEAN_TOKEN"] = DO_TOKEN  # or DIGITALOCEAN_ACCESS_TOKEN
+
+        # 4) Run terraform (no tfvars, no -var-file)
+        #    Add -input=false so it never prompts
+        #    (Optional) You can run 'plan' first if you want.
+        subprocess.run(["terraform", "init", "-no-color"], check=True, env=env)
         subprocess.run([
             "terraform", "apply",
-            "-var-file=terraform.tfvars",
             "-auto-approve",
-            "-no-color"
-        ], check=True)
+            "-no-color",
+            "-input=false"
+        ], check=True, env=env)
 
         return {"message": "✅ Terraform applied successfully!"}
 

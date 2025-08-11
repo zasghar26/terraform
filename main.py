@@ -89,6 +89,28 @@ def run_terraform_apply(tf_code: str) -> dict:
             pass
         shutil.rmtree(deploy_dir, ignore_errors=True)
 
+def check_do_droplet_quota(token: str) -> dict:
+    """Return {'ok': True} or {'ok': False, 'reason': '...'}"""
+    headers = {"Authorization": f"Bearer {token}"}
+    # 1) Get account droplet_limit
+    acc = requests.get("https://api.digitalocean.com/v2/account", headers=headers, timeout=15)
+    acc.raise_for_status()
+    limit = acc.json().get("account", {}).get("droplet_limit", 0)
+
+    # 2) Count current droplets (paginate just in case)
+    total = 0
+    url = "https://api.digitalocean.com/v2/droplets?per_page=200"
+    while url:
+        r = requests.get(url, headers=headers, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        total += len(data.get("droplets", []))
+        url = data.get("links", {}).get("pages", {}).get("next")
+
+    if total >= limit:
+        return {"ok": False, "reason": f"Droplet limit reached ({total}/{limit}). Destroy one or request a limit increase."}
+    return {"ok": True, "usage": total, "limit": limit}
+
 @app.route("/trigger-deploy", methods=["POST"])
 def trigger_deploy():
     tf_code = (request.form.get("tf_code") or "").strip()
@@ -111,7 +133,7 @@ def trigger_deploy():
     return jsonify({
         "status": "accepted",
         "job_id": job_id,
-        "status_url": f"{request.host_url.rstrip('/')}/jobs/{job_id}"
+        "status_url": f"/jobs/{job_id}"
     }), 202
 
 @app.route("/jobs/<job_id>", methods=["GET"])

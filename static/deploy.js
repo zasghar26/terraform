@@ -7,47 +7,59 @@
     const textarea = document.getElementById('tf-code');
     const statusEl = document.getElementById('deploy-status');
 
-    function setStatus(msg) {
+    const setStatus = (msg) => {
         statusEl.textContent = msg;
+    };
+
+    async function pollStatus(url, maxMs = 10 * 60 * 1000, intervalMs = 2000) {
+        const start = Date.now();
+        while (Date.now() - start < maxMs) {
+            const r = await fetch(url, { method: 'GET' });
+            let data = null;
+            try {
+                data = await r.json();
+            } catch {}
+            if (r.ok && data) {
+                if (data.status === 'done') return data;
+                if (data.status === 'error')
+                    throw new Error(data.details || data.message || 'deployment failed');
+                // pending/running → continue
+            }
+            await new Promise((res) => setTimeout(res, intervalMs));
+        }
+        throw new Error('Timed out waiting for deployment status');
     }
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-
         const code = (textarea.value || '').trim();
-        if (!code) {
-            setStatus('Please paste Terraform code before deploying.');
-            return;
-        }
+        if (!code)
+            return setStatus('Please paste Terraform code before deploying.');
 
-        setStatus('Deploying… this may take a moment.');
+        setStatus('Submitting deployment…');
 
         try {
-            // Use FormData so you don’t need to change your current backend
             const body = new FormData();
             body.append('tf_code', code);
 
             const res = await fetch(`${BASE_URL}/trigger-deploy`, {
                 method: 'POST',
-                body
+                body,
             });
-
-            // Try to parse JSON, but don’t crash if it isn’t JSON
             let data = null;
             try {
                 data = await res.json();
-            } catch (_) {}
-
-            if (!res.ok) {
+            } catch {}
+            if (res.status !== 202 || !data?.status_url) {
                 const msg =
                     (data && (data.error || data.message)) ||
                     `HTTP ${res.status} ${res.statusText}`;
                 throw new Error(msg);
             }
 
-            const status = (data && (data.status || data.result || 'success')) || 'success';
-            const message = (data && (data.message || data.detail)) || 'Deployment triggered.';
-            setStatus(`✅ ${status}: ${message}`);
+            setStatus('Deployment started… tracking progress.');
+            const final = await pollStatus(data.status_url);
+            setStatus(`✅ ${final.message || 'Deployment completed.'}`);
         } catch (err) {
             setStatus(`❌ Deployment failed: ${err.message}`);
         }

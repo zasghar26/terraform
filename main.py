@@ -3,6 +3,7 @@ import os
 import subprocess
 import uuid
 import shutil
+import requests
 
 app = Flask(__name__)
 
@@ -112,7 +113,7 @@ def deploy():
 variable "do_token" {}
 
 provider "digitalocean" {
-  token = var.do_token
+    token = var.do_token
 }
 """)
 

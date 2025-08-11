@@ -4,8 +4,10 @@ import subprocess
 import uuid
 import shutil
 import requests
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app, resources={r"/trigger-deploy": {"origins": "*"}})
 
 # Load environment variables
 AGENT_KEY = os.environ.get("AGENT_KEY")

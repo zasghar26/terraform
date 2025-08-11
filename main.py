@@ -13,9 +13,9 @@ DO_TOKEN = os.environ.get("DO_TOKEN")  # DigitalOcean API token
 # In-memory job store (simple for single-instance)
 JOBS = {}  # {job_id: {"status": "pending|running|done|error", "message": str, "details": str}}
 
-@app.route("/")
+@app.route('/')
 def index():
-    base_url = os.environ.get("APP_BASE_URL", "")  # optional; leave blank for same-origin
+    base_url = os.environ.get("APP_BASE_URL", "")
     return f"""
     <html>
     <head>
@@ -25,13 +25,23 @@ def index():
     <body>
       <h2>TerraformGen</h2>
 
-      <div style="margin-top: 24px;">
+      <div style="margin-top:24px;max-width:840px;">
         <h3>Deploy Terraform Code</h3>
+
         <form id="deploy-form">
-          <textarea id="tf-code" name="tf_code" rows="20" cols="100"
-            placeholder="Paste your Terraform code here..."></textarea><br><br>
-          <button type="submit">🚀 Deploy</button>
+          <label style="display:block;margin:8px 0 4px;">DigitalOcean API Token</label>
+          <input id="do-token" name="do_token" type="password" autocomplete="off"
+                 placeholder="dop_v1_..." style="width:100%;padding:8px;" required />
+
+          <label style="display:block;margin:12px 0 4px;">Terraform Configuration</label>
+          <textarea id="tf-code" name="tf_code" rows="18" cols="100"
+            placeholder="Paste your Terraform code here..." style="width:100%;padding:8px;" required></textarea>
+
+          <div style="margin-top:12px;">
+            <button type="submit">🚀 Deploy</button>
+          </div>
         </form>
+
         <div id="deploy-status" style="margin-top:12px;font-family:system-ui,Arial,sans-serif;"></div>
       </div>
 
@@ -40,10 +50,7 @@ def index():
     </html>
     """
 
-def run_terraform_apply(tf_code: str) -> dict:
-    if not DO_TOKEN:
-        return {"error": "Server misconfigured: DO_TOKEN not set"}
-
+def run_terraform_apply(tf_code: str, do_token: str) -> dict:
     deploy_id = str(uuid.uuid4())
     deploy_dir = os.path.join("/tmp", deploy_id)
     os.makedirs(deploy_dir, exist_ok=True)
@@ -52,34 +59,40 @@ def run_terraform_apply(tf_code: str) -> dict:
         cwd_before = os.getcwd()
         os.chdir(deploy_dir)
 
-        # 1) Write user's Terraform as-is
+        # Write user's Terraform
         with open("main.tf", "w") as f:
             f.write(tf_code)
 
-        # 2) If no provider block, add a minimal one that uses env var
+        # Inject minimal provider if missing; token will come from env
         if "provider" not in tf_code:
             with open("provider.tf", "w") as f:
                 f.write('provider "digitalocean" {}\n')
 
-        # 3) Ensure Terraform reads the token from env
+        # Prepare environment with the user-supplied token
         env = os.environ.copy()
-        env["DIGITALOCEAN_TOKEN"] = DO_TOKEN  # or DIGITALOCEAN_ACCESS_TOKEN
+        # Both names are recognized; keeping both for compatibility
+        env["DIGITALOCEAN_TOKEN"] = do_token
+        env["DIGITALOCEAN_ACCESS_TOKEN"] = do_token
 
-        # 4) Run terraform (no tfvars, no -var-file)
-        #    Add -input=false so it never prompts
-        #    (Optional) You can run 'plan' first if you want.
-        subprocess.run(["terraform", "init", "-no-color"], check=True, env=env)
-        subprocess.run([
-            "terraform", "apply",
-            "-auto-approve",
-            "-no-color",
-            "-input=false"
-        ], check=True, env=env)
+        # Run terraform (no tfvars, no prompting)
+        init_res = subprocess.run(["terraform", "init", "-no-color", "-input=false"],
+                            check=False, text=True, capture_output=True, env=env)
+        if init_res.returncode != 0:
+            return {"error": "Terraform init failed", "details": init_res.stderr or init_res.stdout}
+
+        apply_res = subprocess.run([
+                "terraform", "apply",
+                "-auto-approve",
+                "-no-color",
+                "-input=false",
+            ],
+            check=False, text=True, capture_output=True, env=env
+        )
+        if apply_res.returncode != 0:
+            return {"error": "Terraform apply failed", "details": apply_res.stderr or apply_res.stdout}
 
         return {"message": "✅ Terraform applied successfully!"}
 
-    except subprocess.CalledProcessError as e:
-        return {"error": "Terraform failed", "details": str(e)}
     except Exception as e:
         return {"error": "Server error", "details": str(e)}
     finally:
@@ -114,6 +127,10 @@ def check_do_droplet_quota(token: str) -> dict:
 @app.route("/trigger-deploy", methods=["POST"])
 def trigger_deploy():
     tf_code = (request.form.get("tf_code") or "").strip()
+    do_token = (request.form.get("do_token") or "").strip()
+
+    if not do_token:
+        return jsonify({"status": "error", "message": "DigitalOcean token is required"}), 400
     if not tf_code:
         return jsonify({"status": "error", "message": "Terraform code is empty"}), 400
 
@@ -121,8 +138,9 @@ def trigger_deploy():
     JOBS[job_id] = {"status": "pending", "message": "Queued"}
 
     def worker():
+        # IMPORTANT: do NOT log the token
         JOBS[job_id] = {"status": "running", "message": "Running terraform…"}
-        result = run_terraform_apply(tf_code)
+        result = run_terraform_apply(tf_code, do_token)
         if "error" in result:
             JOBS[job_id] = {"status": "error", "message": result["error"], "details": result.get("details", "")}
         else:
@@ -130,6 +148,7 @@ def trigger_deploy():
 
     threading.Thread(target=worker, daemon=True).start()
 
+    # Return a relative URL to avoid mixed content
     return jsonify({
         "status": "accepted",
         "job_id": job_id,

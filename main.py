@@ -20,6 +20,8 @@ JOBS = {}
 @app.get("/")
 def index():
     base_url = request.host_url.rstrip("/")
+    # Allowed origin for postMessage from the agent widget
+    agent_origin = "https://sofmaucktvjaphia4c424wki.agents.do-ai.run"
     return f"""
     <!doctype html>
     <html lang="en">
@@ -43,7 +45,7 @@ def index():
     </head>
     <body>
       <h2>TerraformGen</h2>
-      <p class="hint">Paste Terraform code, set your token, and click Deploy. You can also fill this textarea from your chat UI button.</p>
+      <p class="hint">Paste Terraform code, set your token, and click Deploy — or use the chat agent and press its deploy button to auto-fill the form.</p>
 
       <div class="wrap">
         <form id="deploy-form">
@@ -63,9 +65,25 @@ def index():
         <div id="deploy-status" class="status"></div>
       </div>
 
+      <!-- Your agent widget -->
+      <script async
+        src="https://sofmaucktvjaphia4c424wki.agents.do-ai.run/static/chatbot/widget.js"
+        data-agent-id="c9344a89-6be3-11f0-bf8f-4e013e2ddde4"
+        data-chatbot-id="pzXfg1TbVl2Toyr_B2FPnMAtMgHaZZZZ"
+        data-name="agent-07282025 Chatbot"
+        data-primary-color="#031B4E"
+        data-secondary-color="#E5E8ED"
+        data-button-background-color="#0061EB"
+        data-starting-message="Hello! How can I help you today?"
+        data-logo="/static/chatbot/icons/default-agent.svg">
+      </script>
+
+      <!-- Our app JS -->
       <script src="/static/deploy.js"></script>
+
+      <!-- Page helpers + bridge for agent -> deploy form -->
       <script>
-        // Optional small helpers for the page itself
+        // Small helpers for the page itself
         document.getElementById('download-btn').addEventListener('click', () => {{
           const code = document.getElementById('tf-code').value || '';
           const blob = new Blob([code], {{ type: 'text/plain' }});
@@ -79,6 +97,34 @@ def index():
           await navigator.clipboard.writeText(code);
           alert('Copied to clipboard');
         }});
+
+        // ==== Bridge: receive Terraform code from the agent widget via postMessage ====
+        // The agent can send:  window.parent.postMessage({ type: 'agent:terraform', code: '...'}, '*')
+        window.addEventListener('message', (event) => {{
+          try {{
+            const allowed = new URL("{agent_origin}").origin;
+            if (event.origin !== allowed) return; // strict origin check
+          }} catch (e) {{ return; }}
+
+          const data = event.data || {{}};
+          if (data && data.type === 'agent:terraform' && typeof data.code === 'string') {{
+            if (typeof window.useTerraformFromChat === 'function') {{
+              window.useTerraformFromChat(data.code);
+            }} else {{
+              // fallback: fill the textarea directly
+              const ta = document.getElementById('tf-code');
+              ta.value = data.code;
+              document.getElementById('deploy-form').scrollIntoView({{ behavior: 'smooth' }});
+            }}
+          }}
+
+          // Optional: immediately submit if requested
+          if (data && data.type === 'agent:terraform:deploy' && typeof data.code === 'string') {{
+            const ta = document.getElementById('tf-code');
+            ta.value = data.code;
+            document.getElementById('deploy-form').dispatchEvent(new Event('submit', {{ cancelable: true, bubbles: true }}));
+          }}
+        }});
       </script>
     </body>
     </html>
@@ -88,12 +134,10 @@ def index():
 def check_do_droplet_quota(token: str) -> dict:
     """Return { ok: bool, usage:int, limit:int } or { ok: False, reason:str }."""
     headers = { "Authorization": f"Bearer {token}" }
-    # Account limit
     acc = requests.get("https://api.digitalocean.com/v2/account", headers=headers, timeout=20)
     acc.raise_for_status()
     limit = acc.json().get("account", {}).get("droplet_limit", 0)
 
-    # Count droplets (paginate)
     total = 0
     url = "https://api.digitalocean.com/v2/droplets?per_page=200"
     while url:
@@ -108,29 +152,24 @@ def check_do_droplet_quota(token: str) -> dict:
     return { "ok": True, "usage": total, "limit": limit }
 
 def ensure_provider_file(tf_code: str, workdir: str):
-    # Inject minimal provider block only if no DigitalOcean provider is present.
     if 'provider "digitalocean"' in tf_code:
         return
     with open(os.path.join(workdir, "provider.tf"), "w", encoding="utf-8") as f:
         f.write('provider "digitalocean" {}\n')
 
 def run_terraform_apply(tf_code: str, do_token: str) -> dict:
-    """Run terraform init/apply in a temp dir; always cleans up; return result dict."""
     workdir = tempfile.mkdtemp(prefix="tfjob-")
     try:
-        # Write user's Terraform
         main_tf = os.path.join(workdir, "main.tf")
         with open(main_tf, "w", encoding="utf-8") as f:
             f.write(tf_code)
 
         ensure_provider_file(tf_code, workdir)
 
-        # Prepare environment with the user-supplied token
         env = os.environ.copy()
         env["DIGITALOCEAN_TOKEN"] = do_token
-        env["DIGITALOCEAN_ACCESS_TOKEN"] = do_token  # some providers read this name
+        env["DIGITALOCEAN_ACCESS_TOKEN"] = do_token
 
-        # Init
         init_res = subprocess.run(
             ["terraform", "init", "-no-color", "-input=false"],
             check=False, text=True, capture_output=True, cwd=workdir, env=env
@@ -138,7 +177,6 @@ def run_terraform_apply(tf_code: str, do_token: str) -> dict:
         if init_res.returncode != 0:
             return { "error": "Terraform init failed", "details": (init_res.stderr or init_res.stdout) }
 
-        # Apply
         apply_res = subprocess.run(
             ["terraform", "apply", "-auto-approve", "-no-color", "-input=false"],
             check=False, text=True, capture_output=True, cwd=workdir, env=env
@@ -146,14 +184,12 @@ def run_terraform_apply(tf_code: str, do_token: str) -> dict:
         if apply_res.returncode != 0:
             return { "error": "Terraform apply failed", "details": (apply_res.stderr or apply_res.stdout) }
 
-        # Try to extract a short summary line
         summary = ""
         for line in (apply_res.stdout or "").splitlines():
             if line.strip().startswith("Apply complete!"):
                 summary = line.strip()
                 break
         return { "message": summary or "Apply complete." }
-
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -168,20 +204,17 @@ def trigger_deploy():
     if not tf_code:
         return jsonify({ "status": "error", "message": "Terraform code is empty" }), 400
 
-    # Optional guard: quota check before running anything
     try:
         q = check_do_droplet_quota(do_token)
         if not q.get("ok"):
             return jsonify({ "status": "error", "message": q.get("reason", "Quota check failed") }), 400
     except Exception:
-        # Don't block deploys purely on quota API errors; you can change this to hard-fail if you prefer.
         pass
 
     job_id = str(uuid.uuid4())
     JOBS[job_id] = { "status": "pending", "message": "Queued" }
 
     def worker():
-        # IMPORTANT: do NOT log the token
         JOBS[job_id] = { "status": "running", "message": "Running terraform…" }
         try:
             result = run_terraform_apply(tf_code, do_token)
@@ -193,7 +226,6 @@ def trigger_deploy():
             JOBS[job_id] = { "status": "error", "message": "Unhandled server error", "details": str(e) }
 
     threading.Thread(target=worker, daemon=True).start()
-
     return jsonify({ "status": "accepted", "job_id": job_id, "status_url": f"/jobs/{job_id}" }), 202
 
 @app.get("/jobs/<job_id>")

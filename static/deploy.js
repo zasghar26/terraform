@@ -26,29 +26,21 @@
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const code = textarea.value.trim();
+    const token = tokenInput.value.trim();
+    if (!code) { setStatus('Terraform code is empty.'); return; }
+    if (!token) { setStatus('DigitalOcean token is required.'); return; }
 
-    const code = (textarea.value || '').trim();
-    const token = (tokenInput.value || '').trim();
-
-    if (!token) return setStatus('Please enter your DigitalOcean API token.');
-    if (!code) return setStatus('Please paste Terraform code before deploying.');
-
-    setStatus('Submitting deployment…');
-
+    setStatus('Submitting deployment...');
     try {
-      const body = new FormData();
-      body.append('tf_code', code);
-      body.append('do_token', token);
+      const r = await fetch('/trigger-deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams({ tf_code: code, do_token: token })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'submission failed');
 
-      const res = await fetch(`${BASE_URL}/trigger-deploy`, { method: 'POST', body });
-      let data = null; try { data = await res.json(); } catch {}
-
-      if (res.status !== 202 || !data?.status_url) {
-        const msg = (data && (data.error || data.message)) || `HTTP ${res.status} ${res.statusText}`;
-        throw new Error(msg);
-      }
-
-      // Use relative status URL to avoid mixed-content issues
       const statusUrl = data.status_url.startsWith('http')
         ? data.status_url
         : `${BASE_URL}${data.status_url}`;
@@ -60,4 +52,12 @@
       setStatus(`❌ Deployment failed: ${err.message}`);
     }
   });
+
+  // Bridge function your chat button can call:
+  // window.useTerraformFromChat(codeString)
+  window.useTerraformFromChat = function (code) {
+    if (typeof code !== 'string') return;
+    textarea.value = code;
+    document.getElementById('deploy-form').scrollIntoView({ behavior: 'smooth' });
+  };
 })();

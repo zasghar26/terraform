@@ -1,21 +1,33 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os
-import subprocess
-import uuid
-import shutil
-import threading
-import tempfile
-import requests
-import html
+import os, subprocess, uuid, shutil, threading, tempfile, requests, html
 
 app = Flask(__name__)
 CORS(app)
 
-# In-memory job store
+# ===== Security headers (CSP) so the page can talk to itself and the agent =====
+WIDGET_HOSTS = "https://sofmaucktvjaphia4c424wki.agents.do-ai.run https://*.do-ai.run"
+
+@app.after_request
+def add_security_headers(resp):
+    # Allow our own JS + the agent widget to load and connect.
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        f"script-src 'self' 'unsafe-inline' {WIDGET_HOSTS}; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; "
+        f"connect-src 'self' {WIDGET_HOSTS}; "
+        f"frame-src {WIDGET_HOSTS}; "
+        "font-src 'self' data:;"
+    )
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return resp
+
+# ===== In-memory job store =====
 JOBS = {}
 
-# ---------- UI ----------
+# ===== UI =====
 @app.get("/")
 def index():
     base_url = request.host_url.rstrip("/")
@@ -77,7 +89,7 @@ def index():
 
       <script src="/static/deploy.js"></script>
 
-      <!-- Page helpers + bridge -->
+      <!-- Helpers + postMessage bridge + fetch logger -->
       <script>
         document.getElementById('download-btn').addEventListener('click', () => {{
           const code = document.getElementById('tf-code').value || '';
@@ -93,15 +105,14 @@ def index():
           alert('Copied to clipboard');
         }});
 
-        // postMessage bridge from agent -> this page
+        function isAllowedAgentOrigin(origin) {{
+          try {{ return /\.do-ai\.run$/.test(new URL(origin).host); }}
+          catch {{ return false; }}
+        }}
         window.addEventListener('message', (event) => {{
-          try {{
-            const allowed = new URL("{agent_origin}").origin;
-            if (event.origin !== allowed) return;
-          }} catch (e) {{ return; }}
-
+          if (!isAllowedAgentOrigin(event.origin)) return;
           const data = event.data || {{}};
-          if (data && (data.type === 'agent:terraform' || data.type === 'agent:terraform:deploy') && typeof data.code === 'string') {{
+          if ((data.type === 'agent:terraform' || data.type === 'agent:terraform:deploy') && typeof data.code === 'string') {{
             if (typeof window.useTerraformFromChat === 'function') {{
               window.useTerraformFromChat(data.code);
             }} else {{
@@ -114,18 +125,32 @@ def index():
             }}
           }}
         }});
+
+        // Simple fetch logger to surface network issues in console
+        (function(){{
+          const _fetch = window.fetch;
+          window.fetch = async function(input, init){{
+            try {{
+              const res = await _fetch(input, init);
+              if (!res.ok) console.warn('[deploy-debug] fetch', input, '->', res.status, res.statusText);
+              return res;
+            }} catch (e) {{
+              console.error('[deploy-debug] fetch error', input, e);
+              throw e;
+            }}
+          }};
+        }})();
       </script>
     </body>
     </html>
     """
 
-# ---------- helpers ----------
+# ===== Helpers =====
 def check_do_droplet_quota(token: str) -> dict:
     headers = { "Authorization": f"Bearer {token}" }
     acc = requests.get("https://api.digitalocean.com/v2/account", headers=headers, timeout=20)
     acc.raise_for_status()
     limit = acc.json().get("account", {}).get("droplet_limit", 0)
-
     total = 0
     url = "https://api.digitalocean.com/v2/droplets?per_page=200"
     while url:
@@ -134,7 +159,6 @@ def check_do_droplet_quota(token: str) -> dict:
         data = r.json()
         total += len(data.get("droplets", []))
         url = data.get("links", {}).get("pages", {}).get("next")
-
     if total >= limit:
         return { "ok": False, "reason": f"Droplet limit reached ({total}/{limit})." }
     return { "ok": True, "usage": total, "limit": limit }
@@ -182,7 +206,6 @@ def run_terraform_apply(tf_code: str, do_token: str) -> dict:
         shutil.rmtree(workdir, ignore_errors=True)
 
 def _parse_payload():
-    """Safely parse form OR JSON without raising on empty/absent JSON."""
     tf_code = ""
     do_token = ""
     if request.is_json:
@@ -194,11 +217,10 @@ def _parse_payload():
         do_token = (request.form.get("do_token") or "").strip()
     return tf_code, do_token
 
-# ---------- API ----------
+# ===== API =====
 @app.post("/trigger-deploy")
 def trigger_deploy():
     tf_code, do_token = _parse_payload()
-
     if not do_token:
         return jsonify({ "status": "error", "message": "DigitalOcean token is required" }), 400
     if not tf_code:
@@ -209,7 +231,6 @@ def trigger_deploy():
         if not q.get("ok"):
             return jsonify({ "status": "error", "message": q.get("reason", "Quota check failed") }), 400
     except Exception:
-        # Don't block on quota API errors; flip to strict if you prefer.
         pass
 
     job_id = str(uuid.uuid4())
@@ -240,26 +261,9 @@ def job_status(job_id):
 def health():
     return jsonify({"ok": True}), 200
 
-# Friendly 500 handler so you see the reason in JSON
 @app.errorhandler(500)
 def on_500(err):
     return jsonify({"status": "error", "message": "Internal Server Error", "details": str(err)}), 500
-
-@app.after_request
-def add_csp(resp):
-    # TEMP permissive CSP for debugging the widget
-    resp.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://*.do-ai.run; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src * data: blob:; "
-        "connect-src *; "                   # <-- open for debugging
-        "frame-src https://*.do-ai.run; "
-        "font-src 'self' data:;"
-    )
-    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
-    return resp
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

@@ -53,8 +53,7 @@
     }
   });
 
-  // Bridge function your chat button can call:
-  // window.useTerraformFromChat(codeString)
+  // Bridge function the agent (or any chat) can call:
   window.useTerraformFromChat = function (code) {
     if (typeof code !== 'string') return;
     textarea.value = code;

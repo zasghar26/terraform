@@ -1,5 +1,4 @@
 (() => {
-  // Always use relative URLs to avoid http/https mismatches behind proxies.
   const form = document.getElementById('deploy-form');
   const textarea = document.getElementById('tf-code');
   const tokenInput = document.getElementById('do-token');
@@ -38,9 +37,7 @@
       const data = await r.json();
       if (!r.ok) throw new Error(data.message || 'submission failed');
 
-      // Server returns a relative path like "/jobs/<id>" — keep it relative.
-      const statusPath = data.status_url;
-
+      const statusPath = data.status_url; // relative
       setStatus('Deployment started… tracking progress.');
       const final = await pollStatus(statusPath);
       setStatus(`✅ ${final.message || 'Deployment completed.'}`);

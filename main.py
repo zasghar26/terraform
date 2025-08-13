@@ -1,16 +1,16 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os, subprocess, uuid, shutil, threading, tempfile, requests, html
+import os, subprocess, uuid, shutil, threading, tempfile, requests, html, time
 
 app = Flask(__name__)
 CORS(app)
 
-# ===== Security headers (CSP) so the page can talk to itself and the agent =====
+# ===== Security headers (CSP) =====
+# Allow our own JS + the agent widget to load and connect.
 WIDGET_HOSTS = "https://sofmaucktvjaphia4c424wki.agents.do-ai.run https://*.do-ai.run"
 
 @app.after_request
 def add_security_headers(resp):
-    # Allow our own JS + the agent widget to load and connect.
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         f"script-src 'self' 'unsafe-inline' {WIDGET_HOSTS}; "
@@ -24,14 +24,16 @@ def add_security_headers(resp):
     resp.headers["X-Frame-Options"] = "SAMEORIGIN"
     return resp
 
-# ===== In-memory job store =====
+# ===== In-memory stores =====
 JOBS = {}
+LATEST_FROM_AGENT = {"code": "", "ts": 0}
+
+AGENT_PUSH_SECRET = os.environ.get("AGENT_PUSH_SECRET")  # set this in DO App Platform
 
 # ===== UI =====
 @app.get("/")
 def index():
-    base_url = request.host_url.rstrip("/")
-    agent_origin = "https://sofmaucktvjaphia4c424wki.agents.do-ai.run"
+    # Use only relative URLs on the frontend so scheme matches the page (fixes CSP "connect-src 'self'")
     return f"""
     <!doctype html>
     <html lang="en">
@@ -39,7 +41,6 @@ def index():
       <meta charset="utf-8"/>
       <meta name="viewport" content="width=device-width, initial-scale=1"/>
       <title>TerraformGen</title>
-      <meta name="app-base-url" content="{html.escape(base_url)}">
       <style>
         body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 24px; }}
         h2 {{ margin: 0 0 8px; }}
@@ -50,11 +51,12 @@ def index():
         .code-area {{ min-height: 360px; }}
         .status {{ margin-top: 12px; }}
         .hint {{ color: #666; font-size: 13px; }}
+        .btns {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }}
       </style>
     </head>
     <body>
       <h2>TerraformGen</h2>
-      <p class="hint">Paste Terraform code, set your token, and click Deploy — or use the chat agent to auto-fill.</p>
+      <p class="hint">Paste Terraform code, set your token, and click Deploy — or click <i>Fetch from Chat</i> to pull the last snippet your agent sent.</p>
 
       <div class="wrap">
         <form id="deploy-form">
@@ -64,8 +66,9 @@ def index():
           <label for="tf-code">Terraform Configuration</label>
           <textarea id="tf-code" name="tf_code" class="code-area" placeholder="Paste your Terraform code here..." required></textarea>
 
-          <div style="margin-top:12px;">
+          <div class="btns">
             <button type="submit">🚀 Deploy</button>
+            <button id="fetch-from-chat" type="button">🪄 Fetch from Chat</button>
             <button id="download-btn" type="button">Download .tf</button>
             <button id="copy-btn" type="button">Copy</button>
           </div>
@@ -105,8 +108,27 @@ def index():
           alert('Copied to clipboard');
         }});
 
+        // Pull the last snippet the agent pushed to /agent/push
+        document.getElementById('fetch-from-chat').addEventListener('click', async () => {{
+          const btn = document.getElementById('fetch-from-chat');
+          btn.disabled = true; btn.textContent = 'Fetching…';
+          try {{
+            const r = await fetch('/agent/latest');
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.error || 'failed');
+            if (!data.code) throw new Error('no code available yet');
+            document.getElementById('tf-code').value = data.code;
+            document.getElementById('deploy-form').scrollIntoView({{ behavior: 'smooth' }});
+            document.getElementById('deploy-status').textContent = 'Loaded code from chat.';
+          }} catch (e) {{
+            document.getElementById('deploy-status').textContent = 'Could not fetch from chat: ' + e.message;
+          }} finally {{
+            btn.disabled = false; btn.textContent = '🪄 Fetch from Chat';
+          }}
+        }});
+
         function isAllowedAgentOrigin(origin) {{
-          try {{ return /\.do-ai\.run$/.test(new URL(origin).host); }}
+          try {{ return /\\.do-ai\\.run$/.test(new URL(origin).host); }}
           catch {{ return false; }}
         }}
         window.addEventListener('message', (event) => {{
@@ -256,6 +278,55 @@ def job_status(job_id):
     if not job:
         return jsonify({ "error": "job not found" }), 404
     return jsonify(job), 200
+
+# ===== Webhooks for the agent =====
+def _agent_auth_ok(req_json):
+    # Accept header or field. Require env var if set.
+    provided = request.headers.get("X-Agent-Secret") or (req_json or {}).get("secret")
+    if AGENT_PUSH_SECRET:  # if configured, enforce it
+        return provided == AGENT_PUSH_SECRET
+    return True  # if not configured, allow (dev only)
+
+@app.post("/agent/push")
+def agent_push():
+    """Agent sends: { "code": "<HCL>", "deploy": false } with X-Agent-Secret header."""
+    payload = request.get_json(silent=True) or {}
+    if not _agent_auth_ok(payload):
+        return jsonify({"error": "unauthorized"}), 401
+    code = (payload.get("code") or "").strip()
+    if not code:
+        return jsonify({"error": "missing code"}), 400
+
+    # Save latest for the UI button to fetch
+    LATEST_FROM_AGENT["code"] = code
+    LATEST_FROM_AGENT["ts"] = int(time.time())
+
+    # Optional: deploy immediately if requested
+    if bool(payload.get("deploy")):
+        do_token = (payload.get("do_token") or "").strip()
+        if not do_token:
+            return jsonify({"error": "deploy requested but no do_token provided"}), 400
+        job_id = str(uuid.uuid4())
+        JOBS[job_id] = {"status": "pending", "message": "Queued by agent"}
+        def worker():
+            JOBS[job_id] = {"status": "running", "message": "Running terraform…"}
+            try:
+                result = run_terraform_apply(code, do_token)
+                if "error" in result:
+                    JOBS[job_id] = {"status": "error", "message": result["error"], "details": result.get("details", "")}
+                else:
+                    JOBS[job_id] = {"status": "done", "message": result.get("message", "Done")}
+            except Exception as e:
+                JOBS[job_id] = {"status": "error", "message": "Unhandled server error", "details": str(e)}
+        threading.Thread(target=worker, daemon=True).start()
+        return jsonify({"ok": True, "job_id": job_id, "status_url": f"/jobs/{job_id}"}), 202
+
+    return jsonify({"ok": True, "stored": True, "ts": LATEST_FROM_AGENT["ts"]})
+
+@app.get("/agent/latest")
+def agent_latest():
+    """UI calls this to get the last code pushed by the agent."""
+    return jsonify({"code": LATEST_FROM_AGENT["code"], "ts": LATEST_FROM_AGENT["ts"]})
 
 @app.get("/healthz")
 def health():

@@ -1,8 +1,5 @@
 (() => {
-  const BASE_URL =
-    document.querySelector('meta[name="app-base-url"]')?.content?.trim() ||
-    window.location.origin;
-
+  // Always use relative URLs to avoid http/https mismatches behind proxies.
   const form = document.getElementById('deploy-form');
   const textarea = document.getElementById('tf-code');
   const tokenInput = document.getElementById('do-token');
@@ -10,10 +7,10 @@
 
   const setStatus = (msg) => { statusEl.textContent = msg; };
 
-  async function pollStatus(url, maxMs = 10 * 60 * 1000, intervalMs = 2000) {
+  async function pollStatus(path, maxMs = 10 * 60 * 1000, intervalMs = 2000) {
     const start = Date.now();
     while (Date.now() - start < maxMs) {
-      const r = await fetch(url, { method: 'GET' });
+      const r = await fetch(path, { method: 'GET' });
       let data = null; try { data = await r.json(); } catch {}
       if (r.ok && data) {
         if (data.status === 'done') return data;
@@ -41,12 +38,11 @@
       const data = await r.json();
       if (!r.ok) throw new Error(data.message || 'submission failed');
 
-      const statusUrl = data.status_url.startsWith('http')
-        ? data.status_url
-        : `${BASE_URL}${data.status_url}`;
+      // Server returns a relative path like "/jobs/<id>" — keep it relative.
+      const statusPath = data.status_url;
 
       setStatus('Deployment started… tracking progress.');
-      const final = await pollStatus(statusUrl);
+      const final = await pollStatus(statusPath);
       setStatus(`✅ ${final.message || 'Deployment completed.'}`);
     } catch (err) {
       setStatus(`❌ Deployment failed: ${err.message}`);

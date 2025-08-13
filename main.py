@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import subprocess
@@ -12,15 +12,13 @@ import html
 app = Flask(__name__)
 CORS(app)
 
-# In-memory job store (simple for single-instance)
-# {job_id: {"status": "pending|running|done|error", "message": str, "details": str}}
+# In-memory job store
 JOBS = {}
 
 # ---------- UI ----------
 @app.get("/")
 def index():
     base_url = request.host_url.rstrip("/")
-    # Allowed origin for postMessage from the agent widget
     agent_origin = "https://sofmaucktvjaphia4c424wki.agents.do-ai.run"
     return f"""
     <!doctype html>
@@ -40,12 +38,11 @@ def index():
         .code-area {{ min-height: 360px; }}
         .status {{ margin-top: 12px; }}
         .hint {{ color: #666; font-size: 13px; }}
-        .row {{ display:flex; gap:18px; align-items:center; }}
       </style>
     </head>
     <body>
       <h2>TerraformGen</h2>
-      <p class="hint">Paste Terraform code, set your token, and click Deploy — or use the chat agent and press its deploy button to auto-fill the form.</p>
+      <p class="hint">Paste Terraform code, set your token, and click Deploy — or use the chat agent to auto-fill.</p>
 
       <div class="wrap">
         <form id="deploy-form">
@@ -65,7 +62,7 @@ def index():
         <div id="deploy-status" class="status"></div>
       </div>
 
-      <!-- Your agent widget -->
+      <!-- Agent widget -->
       <script async
         src="https://sofmaucktvjaphia4c424wki.agents.do-ai.run/static/chatbot/widget.js"
         data-agent-id="c9344a89-6be3-11f0-bf8f-4e013e2ddde4"
@@ -78,12 +75,10 @@ def index():
         data-logo="/static/chatbot/icons/default-agent.svg">
       </script>
 
-      <!-- Our app JS -->
       <script src="/static/deploy.js"></script>
 
-      <!-- Page helpers + bridge for agent -> deploy form -->
+      <!-- Page helpers + bridge -->
       <script>
-        // Small helpers for the page itself
         document.getElementById('download-btn').addEventListener('click', () => {{
           const code = document.getElementById('tf-code').value || '';
           const blob = new Blob([code], {{ type: 'text/plain' }});
@@ -98,31 +93,25 @@ def index():
           alert('Copied to clipboard');
         }});
 
-        // ==== Bridge: receive Terraform code from the agent widget via postMessage ====
-        // The agent can send:  window.parent.postMessage({ type: 'agent:terraform', code: '...'}, '*')
+        // postMessage bridge from agent -> this page
         window.addEventListener('message', (event) => {{
           try {{
             const allowed = new URL("{agent_origin}").origin;
-            if (event.origin !== allowed) return; // strict origin check
+            if (event.origin !== allowed) return;
           }} catch (e) {{ return; }}
 
           const data = event.data || {{}};
-          if (data && data.type === 'agent:terraform' && typeof data.code === 'string') {{
+          if (data && (data.type === 'agent:terraform' || data.type === 'agent:terraform:deploy') && typeof data.code === 'string') {{
             if (typeof window.useTerraformFromChat === 'function') {{
               window.useTerraformFromChat(data.code);
             }} else {{
-              // fallback: fill the textarea directly
               const ta = document.getElementById('tf-code');
               ta.value = data.code;
               document.getElementById('deploy-form').scrollIntoView({{ behavior: 'smooth' }});
             }}
-          }}
-
-          // Optional: immediately submit if requested
-          if (data && data.type === 'agent:terraform:deploy' && typeof data.code === 'string') {{
-            const ta = document.getElementById('tf-code');
-            ta.value = data.code;
-            document.getElementById('deploy-form').dispatchEvent(new Event('submit', {{ cancelable: true, bubbles: true }}));
+            if (data.type === 'agent:terraform:deploy') {{
+              document.getElementById('deploy-form').dispatchEvent(new Event('submit', {{ cancelable: true, bubbles: true }}));
+            }}
           }}
         }});
       </script>
@@ -130,9 +119,8 @@ def index():
     </html>
     """
 
-# ---------- Helpers ----------
+# ---------- helpers ----------
 def check_do_droplet_quota(token: str) -> dict:
-    """Return { ok: bool, usage:int, limit:int } or { ok: False, reason:str }."""
     headers = { "Authorization": f"Bearer {token}" }
     acc = requests.get("https://api.digitalocean.com/v2/account", headers=headers, timeout=20)
     acc.raise_for_status()
@@ -193,11 +181,23 @@ def run_terraform_apply(tf_code: str, do_token: str) -> dict:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
+def _parse_payload():
+    """Safely parse form OR JSON without raising on empty/absent JSON."""
+    tf_code = ""
+    do_token = ""
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        tf_code = (data.get("code") or data.get("tf_code") or "").strip()
+        do_token = (data.get("do_token") or "").strip()
+    else:
+        tf_code = (request.form.get("tf_code") or "").strip()
+        do_token = (request.form.get("do_token") or "").strip()
+    return tf_code, do_token
+
 # ---------- API ----------
 @app.post("/trigger-deploy")
 def trigger_deploy():
-    tf_code = (request.form.get("tf_code") or request.json.get("code") if request.is_json else "" or "").strip()
-    do_token = (request.form.get("do_token") or request.json.get("do_token") if request.is_json else "" or "").strip()
+    tf_code, do_token = _parse_payload()
 
     if not do_token:
         return jsonify({ "status": "error", "message": "DigitalOcean token is required" }), 400
@@ -209,6 +209,7 @@ def trigger_deploy():
         if not q.get("ok"):
             return jsonify({ "status": "error", "message": q.get("reason", "Quota check failed") }), 400
     except Exception:
+        # Don't block on quota API errors; flip to strict if you prefer.
         pass
 
     job_id = str(uuid.uuid4())
@@ -234,6 +235,15 @@ def job_status(job_id):
     if not job:
         return jsonify({ "error": "job not found" }), 404
     return jsonify(job), 200
+
+@app.get("/healthz")
+def health():
+    return jsonify({"ok": True}), 200
+
+# Friendly 500 handler so you see the reason in JSON
+@app.errorhandler(500)
+def on_500(err):
+    return jsonify({"status": "error", "message": "Internal Server Error", "details": str(err)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

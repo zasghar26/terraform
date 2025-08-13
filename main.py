@@ -91,6 +91,7 @@ def index():
       </script>
 
       <script src="/static/deploy.js"></script>
+      <script src="/static/auto_fetch.js"></script>
 
       <!-- Helpers + postMessage bridge + fetch logger -->
       <script>

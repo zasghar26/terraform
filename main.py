@@ -245,5 +245,21 @@ def health():
 def on_500(err):
     return jsonify({"status": "error", "message": "Internal Server Error", "details": str(err)}), 500
 
+@app.after_request
+def add_csp(resp):
+    # TEMP permissive CSP for debugging the widget
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://*.do-ai.run; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src * data: blob:; "
+        "connect-src *; "                   # <-- open for debugging
+        "frame-src https://*.do-ai.run; "
+        "font-src 'self' data:;"
+    )
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    return resp
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

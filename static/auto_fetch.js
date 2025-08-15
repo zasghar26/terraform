@@ -9,6 +9,15 @@
   label.style.fontSize = '14px';
   label.style.userSelect = 'none';
   label.innerHTML = `<input id="auto-fetch" type="checkbox"> Auto-fetch from Chat`;
+  document.addEventListener('DOMContentLoaded', () => {
+  const chk = document.getElementById('auto-fetch');
+  if (!chk) return;
+  chk.checked = true;  // enable on load
+  // start polling immediately (re-uses the same handler defined later)
+  const event = new Event('change');
+  chk.dispatchEvent(event);
+});
+
   row.appendChild(label);
 
   const textarea = document.getElementById('tf-code');
@@ -23,11 +32,17 @@
       const data = await r.json();
       if (!r.ok) return;
       // Only update when a *newer* snippet arrives
-      if (data && data.code && typeof data.ts === 'number' && data.ts > lastTs) {
-        textarea.value = data.code;
-        lastTs = data.ts;
-        if (statusEl) statusEl.textContent = 'Loaded code from chat.';
+    if (data && data.code && typeof data.ts === 'number' && data.ts > lastTs) {
+      textarea.value = data.code;
+      lastTs = data.ts;
+      if (statusEl) statusEl.textContent = 'Loaded code from chat. Deploying…';
+      // 🔽 trigger the normal form submit (deploy.js handles the rest)
+      const form = document.getElementById('deploy-form');
+      if (form) {
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
       }
+    }
     } catch { /* ignore */ }
   }
 

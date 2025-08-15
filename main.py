@@ -68,9 +68,7 @@ def index():
 
           <div class="btns">
             <button type="submit">🚀 Deploy</button>
-            <button id="fetch-from-chat" type="button">🪄 Fetch from Chat</button>
             <button id="download-btn" type="button">Download .tf</button>
-            <button id="copy-btn" type="button">Copy</button>
           </div>
         </form>
 
@@ -91,7 +89,6 @@ def index():
       </script>
 
       <script src="/static/deploy.js"></script>
-      <script src="/static/auto_fetch.js"></script>
 
       <!-- Helpers + postMessage bridge + fetch logger -->
       <script>
@@ -103,31 +100,6 @@ def index():
           a.href = url; a.download = 'main.tf'; a.click();
           URL.revokeObjectURL(url);
         }});
-        document.getElementById('copy-btn').addEventListener('click', async () => {{
-          const code = document.getElementById('tf-code').value || '';
-          await navigator.clipboard.writeText(code);
-          alert('Copied to clipboard');
-        }});
-
-        // Pull the last snippet the agent pushed to /agent/push
-        document.getElementById('fetch-from-chat').addEventListener('click', async () => {{
-          const btn = document.getElementById('fetch-from-chat');
-          btn.disabled = true; btn.textContent = 'Fetching…';
-          try {{
-            const r = await fetch('/agent/latest');
-            const data = await r.json();
-            if (!r.ok) throw new Error(data.error || 'failed');
-            if (!data.code) throw new Error('no code available yet');
-            document.getElementById('tf-code').value = data.code;
-            document.getElementById('deploy-form').scrollIntoView({{ behavior: 'smooth' }});
-            document.getElementById('deploy-status').textContent = 'Loaded code from chat.';
-          }} catch (e) {{
-            document.getElementById('deploy-status').textContent = 'Could not fetch from chat: ' + e.message;
-          }} finally {{
-            btn.disabled = false; btn.textContent = '🪄 Fetch from Chat';
-          }}
-        }});
-
         function isAllowedAgentOrigin(origin) {{
           try {{ return /\\.do-ai\\.run$/.test(new URL(origin).host); }}
           catch {{ return false; }}

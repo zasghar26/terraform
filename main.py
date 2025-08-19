@@ -60,7 +60,7 @@ def index():
 
       <div class="wrap">
         <form id="deploy-form">
-          <label for="do-token">DigitalOcean API Token</label>
+          <label for="do-token">DigitalOcean Token</label>
           <input id="do-token" name="do_token" type="password" autocomplete="off" placeholder="dop_v1_..." required />
 
           <label for="tf-code">Terraform Configuration</label>

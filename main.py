@@ -56,7 +56,7 @@ def index():
     </head>
     <body>
       <h2>TerraformGen</h2>
-      <p class="hint">Paste Terraform code, set your token, and click Deploy — or click <i>Fetch from Chat</i> to pull the last snippet your agent sent.</p>
+      <p class="hint">Paste Terraform code, set your token, and click Deploy.</p>
 
       <div class="wrap">
         <form id="deploy-form">
